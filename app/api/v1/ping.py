@@ -4,7 +4,7 @@ from uuid import UUID
 from app.schemas.ping import CreatePing, PingResponse
 from app.crud.ping import create_ping, get_ping, list_pings
 
-from app.core.database import get_db
+from app.db.public import get_db
 
 router = APIRouter(prefix="/ping", tags=["Ping"])
 
