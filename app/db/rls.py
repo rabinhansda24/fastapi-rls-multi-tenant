@@ -11,19 +11,17 @@ from app.db.session import SessionLocal
 @contextmanager
 def rls_session(tenant_id: UUID, user_id: UUID) -> Generator[Session, None, None]:
     """
-    RLS-safe session:
+    Pool-safe RLS session:
     - starts a transaction
-    - sets the RLS context for the current tenant and user using SET LOCAL (transaction-scoped)
-    - garantees context does not leak through connection pooling
+    - sets tenant/user context transaction-locally
+    - guarantees no context leaks via connection pooling
     """
     db: Session = SessionLocal()
     try:
         with db.begin():
-            db.execute(text("SET LOCAL rls.tenant_id = :tenant_id"), {"tenant_id": str(tenant_id)})
-            db.execute(text("SET LOCAL rls.user_id = :user_id"), {"user_id": str(user_id)})
+            db.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)})
+            db.execute(text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(user_id)})
             yield db
-    except Exception:
-        db.rollback()
-        raise
+        # commit happens automatically here if no exception
     finally:
         db.close()

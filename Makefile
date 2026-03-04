@@ -17,7 +17,7 @@ sh:
 
 # Migrations (runs a one-off container)
 mig:
-	alembic revision --autogenerate -m "$(m)"
+	sudo docker compose run --rm api alembic revision --autogenerate -m "$(m)"
 
 dbup:
 	sudo docker compose run --rm api alembic upgrade head
