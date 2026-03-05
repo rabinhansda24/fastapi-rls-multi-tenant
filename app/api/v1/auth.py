@@ -28,10 +28,10 @@ async def login(tenant_slug: str, trequest: LoginRequest, db=Depends(get_db)):
     - **email**: Email of the user
     - **password**: Password of the user
     """
+    tenant = get_tenant_by_slug(db, slug=tenant_slug)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Request Forbidden")
     try:
-        tenant = get_tenant_by_slug(db, slug=tenant_slug)
-        if not tenant:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Requeste Forbidden")
         return login_tenant(db, trequest=trequest, tenant=tenant)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

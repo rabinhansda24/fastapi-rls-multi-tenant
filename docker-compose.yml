@@ -49,5 +49,21 @@ services:
       --reload
       --reload-dir /app/app
 
+  test:
+    build: .
+    container_name: app_test
+    env_file:
+      - .env.test
+    volumes:
+      - ./app:/app/app:rw
+      - ./alembic:/app/alembic:rw
+      - ./alembic.ini:/app/alembic.ini:rw
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - test
+    command: pytest -v
+
 volumes:
   pgdata:

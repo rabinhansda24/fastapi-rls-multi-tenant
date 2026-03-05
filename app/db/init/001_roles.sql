@@ -21,3 +21,6 @@ GRANT USAGE ON SCHEMA public TO app_user;
 
 -- Allow connections
 GRANT CONNECT ON DATABASE app TO app_owner, app_user;
+
+-- Allow app_owner to create (and drop) databases — needed for isolated test DB lifecycle
+ALTER ROLE app_owner CREATEDB;

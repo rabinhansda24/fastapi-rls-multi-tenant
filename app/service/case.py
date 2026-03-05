@@ -67,11 +67,11 @@ def get_case_by_id(db: Session, *, case_id: UUID):
     """
     try:
         case = get_case(db, case_id=case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="Case not found")
-        return case
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return case
     
 def append_case_event(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID, created_by: UUID):
     """
