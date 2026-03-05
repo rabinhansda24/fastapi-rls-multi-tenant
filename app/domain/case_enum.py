@@ -1,0 +1,14 @@
+import enum
+
+class CaseStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    IN_REVIEW = "IN_REVIEW"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+class CaseEventType(str, enum.Enum):
+    CASE_CREATED = "CASE_CREATED"
+    EVIDENCE_COMPLETED = "EVIDENCE_COMPLETED"
+    SCREENING_COMPLETED = "SCREENING_COMPLETED"
+    APPROVED = "APPROVED"
+    STATUS_CHANGED = "STATUS_CHANGED"

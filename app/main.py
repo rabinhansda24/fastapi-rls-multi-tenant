@@ -5,6 +5,7 @@ from app.api.v1.ping import router as ping_router
 from app.api.v1.user import router as user_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.tenant import router as tenant_router
+from app.api.v1.cases import router as cases_router
 
 app = FastAPI(
     title="FastAPI Template",
@@ -17,3 +18,4 @@ app.include_router(ping_router)
 app.include_router(auth_router, prefix="/v1", tags=["Authentication"])
 app.include_router(user_router, prefix="/v1", tags=["Users"])
 app.include_router(tenant_router, prefix="/v1", tags=["Tenants"])
+app.include_router(cases_router, prefix="/v1", tags=["Cases"])

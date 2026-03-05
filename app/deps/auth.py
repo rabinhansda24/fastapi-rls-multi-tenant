@@ -33,10 +33,19 @@ def get_principal(
 def get_rls_session(principal: TokenClaims = Depends(get_principal)):
     db: Session = SessionLocal()
     try:
-        with db.begin():
-            db.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(principal.tenant_id)})
-            db.execute(text("SELECT set_config('app.user_id', :uid, true)"), {"uid": str(principal.user_id)})
-            yield db
+        # set tenant context for this connection
+        db.execute(
+            text("SELECT set_config('app.tenant_id', :tid, false)"),
+            {"tid": str(principal.tenant_id)},
+        )
+
+        db.execute(
+            text("SELECT set_config('app.user_id', :uid, false)"),
+            {"uid": str(principal.user_id)},
+        )
+
+        yield db
+
     finally:
         db.close()
 
