@@ -12,7 +12,7 @@ from app.models.base import Base
 # access to the values within the .ini file in use.
 config = context.config
 
-config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL", "sqlite:///./test.db"))
+config.set_main_option("sqlalchemy.url", os.getenv("ALEMBIC_DATABASE_URL", "sqlite:///./test.db"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
