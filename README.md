@@ -9,6 +9,7 @@ A production-grade multi-tenant REST API built with FastAPI, PostgreSQL Row-Leve
 - [Architecture Overview (HLD)](#architecture-overview-hld)
 - [Detailed Design (LLD)](#detailed-design-lld)
 - [Security Design](#security-design)
+- [Threat Model](#threat-model)
 - [RLS Design](#rls-design)
 - [Data Model](#data-model)
 - [API Reference](#api-reference)
@@ -88,7 +89,7 @@ A production-grade multi-tenant REST API built with FastAPI, PostgreSQL Row-Leve
 | Decision | Rationale |
 |---|---|
 | RLS at database layer | Tenant isolation is guaranteed even if application logic has bugs |
-| FORCE ROW LEVEL SECURITY | Applies RLS even to `app_owner` (table owner); prevents accidental bypass |
+| FORCE ROW LEVEL SECURITY | Applies RLS even to `app_owner` (table owner); prevents accidental bypass. Note: PostgreSQL superusers can still bypass RLS — application connections must never use superuser roles |
 | Two DB roles | `app_owner` for DDL; `app_user` for DML — least-privilege runtime |
 | Append-only `case_events` | DB triggers block UPDATE/DELETE; immutable audit trail |
 | Idempotency keys on status updates | Clients can safely retry without double-processing |
@@ -169,9 +170,12 @@ PATCH /v1/cases/{case_id}/status
   ├─ UPDATE cases SET status = 'APPROVED'
   ├─ INSERT INTO case_events (event_type='STATUS_CHANGED', idempotency_key)
   │     └─ IntegrityError (unique violation) → race condition detected
+  │           → two clients retried simultaneously; only one INSERT wins
   │           → rollback + re-query existing event → return it
   └─ COMMIT
 ```
+
+The `UNIQUE(tenant_id, case_id, idempotency_key)` constraint is the safety net for concurrent retries. If two clients send the same `idempotency_key` simultaneously, only one `INSERT` succeeds at the database level. The loser gets an `IntegrityError`, rolls back, and re-reads the already-committed event — returning the same result as the winner. No duplicate events are ever created.
 
 ---
 
@@ -223,11 +227,31 @@ The `app_user` role cannot bypass RLS policies. Even if application code attempt
 
 ---
 
+## Threat Model
+
+This system is designed to resist tenant isolation failures at every layer. The table below maps potential attack surfaces to their mitigations:
+
+| Layer | Risk | Mitigation |
+|---|---|---|
+| API | Missing tenant filter in query | DB-level RLS enforces it regardless |
+| ORM / CRUD | Developer forgets `tenant_id` WHERE clause | RLS `USING` policy filters rows silently |
+| SQL injection | Bypass application filters | Parameterized queries (SQLAlchemy ORM) + RLS as second line |
+| Connection pooling | Stale `app.tenant_id` leaks to next request | `get_rls_session` re-sets GUC on every request |
+| Superuser access | Bypass FORCE RLS | Application never connects as superuser; `app_user` is non-superuser |
+| Audit trail tampering | DELETE/UPDATE case events | DB triggers block mutation; append-only enforced at database level |
+| Token forgery | Fake `tenant_id` in JWT | JWT signed with `SECRET_KEY`; tampering causes signature verification failure |
+
+**Defense in depth:** RLS is a hard database constraint, not an application convention. Even if application code is buggy or a developer makes a mistake, PostgreSQL will not return or accept cross-tenant rows.
+
+---
+
 ## RLS Design
 
 ### Concept
 
 PostgreSQL's Row-Level Security allows defining policies that filter which rows a role can see or modify. With `FORCE ROW LEVEL SECURITY`, the policies apply even to the table owner (`app_owner`), providing a hard guarantee.
+
+> **Important:** PostgreSQL superusers can still bypass RLS regardless of `FORCE ROW LEVEL SECURITY`. In production environments, application connections must never use superuser roles. This system uses `app_user` (a non-superuser role) for all runtime queries.
 
 ### Context Injection
 
@@ -239,7 +263,7 @@ db.execute(text("SELECT set_config('app.tenant_id', :tid, false)"), {"tid": str(
 db.execute(text("SELECT set_config('app.user_id', :uid, false)"),   {"uid": str(principal.user_id)})
 ```
 
-The `false` argument means the setting is connection-scoped (not transaction-scoped), so it persists for the connection lifetime but is not visible to other connections.
+PostgreSQL configuration variables (GUCs) are stored per connection. The `false` argument means the setting is connection-scoped (not transaction-scoped), so it persists for the lifetime of the connection but is not visible to other connections.
 
 ### RLS Policies
 
@@ -270,9 +294,15 @@ CREATE POLICY case_events_tenant_isolation ON case_events
 | Table | RLS Enabled | FORCE RLS | Policy |
 |---|---|---|---|
 | `tenants` | No | No | Public (no sensitive per-row data) |
-| `users` | No | No | Disabled after initial design iteration |
+| `users` | No | No | See note below |
 | `cases` | Yes | Yes | `cases_tenant_isolation` |
 | `case_events` | Yes | Yes | `case_events_tenant_isolation` |
+
+**Why `tenants` and `users` do not use RLS:**
+
+User registration and tenant creation must occur *before* any tenant context exists — there is no `app.tenant_id` GUC set at that point. If RLS were enabled on these tables, the `USING` policy would match nothing and registration would silently fail or block.
+
+Identity tables (`tenants`, `users`) are therefore outside the RLS boundary. Access control for these tables is enforced at the application layer instead.
 
 ### Append-Only `case_events`
 
@@ -299,7 +329,17 @@ This ensures an immutable audit trail regardless of application logic.
 
 ### Connection Pool Safety
 
-Because GUC variables are connection-scoped, it is critical that each request uses a fresh connection with its own `set_config` call. The application uses `NullPool` in tests and relies on session-per-request in production to avoid GUC state leaking between requests.
+Because GUC variables are stored per connection, there is a real risk in connection-pooled environments:
+
+```
+Request A → sets app.tenant_id = "tenant-A"
+connection returned to pool
+
+Request B → gets the same connection
+            app.tenant_id is still "tenant-A" ← tenant leak
+```
+
+This system avoids that leak because `get_rls_session` sets tenant context **on every request** before yielding the session to any query. Since tenant context is injected at the start of each request and the session is request-scoped, there is no window where a connection can be reused with a stale tenant context. The application also uses `NullPool` in tests to guarantee connection isolation.
 
 ---
 
@@ -865,6 +905,16 @@ curl -X POST http://localhost:8000/v1/cases/ \
 
 **Why `app_user` in tests?**
 `cases` and `case_events` have `FORCE ROW LEVEL SECURITY`. Even `app_owner` (table owner) cannot bypass RLS with FORCE. Runtime sessions must use `app_user` — exactly as in production — or all writes will fail with "new row violates row-level security policy".
+
+### RLS Isolation Verified by Tests
+
+The integration test suite explicitly validates tenant isolation at the database level:
+
+- **Cross-tenant reads blocked** — a token from tenant A cannot retrieve cases belonging to tenant B; the RLS `USING` policy returns zero rows, producing a 404
+- **Cross-tenant writes blocked** — inserting a row with a mismatched `tenant_id` is rejected by the RLS `WITH CHECK` policy
+- **RLS policies confirmed present** — tests connect as `app_user` (not `app_owner`), which means any missing or misconfigured policy would immediately cause test failures
+
+These tests run against a real PostgreSQL instance with full migrations applied, making them a reliable guard against RLS regressions.
 
 ### Test Structure
 

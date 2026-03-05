@@ -105,10 +105,18 @@ def db_engine(test_db_url):
 def TestSessionLocal(test_db_url):
     # Use app_user (DATABASE_URL) against the test DB — mirrors production so
     # RLS grants and FORCE ROW LEVEL SECURITY behave identically to production.
+    #
+    # pool_size=1, max_overflow=0: use a single persistent connection so that
+    # session-level set_config('app.tenant_id', ...) survives across the
+    # session.commit() → session.refresh() boundary inside create_new_case.
+    # SQLAlchemy 2.0 releases the connection back to the pool after commit;
+    # with NullPool that means a fresh connection (no set_config), causing the
+    # post-commit refresh to fail the RLS USING policy.  With pool_size=1 the
+    # same physical connection is reused, keeping the RLS context intact.
     app_user_base = must_env("DATABASE_URL").rsplit("/", 1)[0]
     test_db_name = test_db_url.rsplit("/", 1)[-1]
     runtime_url = f"{app_user_base}/{test_db_name}"
-    engine = create_engine(runtime_url, poolclass=NullPool)
+    engine = create_engine(runtime_url, pool_size=1, max_overflow=0)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     yield Session
     engine.dispose()
