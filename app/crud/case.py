@@ -1,9 +1,10 @@
-import logging
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
-logger = logging.getLogger(__name__)
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 from app.domain.case_enum import CaseEventType, CaseStatus
 from app.models.case import Case

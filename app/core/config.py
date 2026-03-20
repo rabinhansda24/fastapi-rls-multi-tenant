@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     CORS_ORIGINS: list[str] = []
+    LOG_LEVEL: str = "INFO"
+    LOG_JSON: bool = False  # set True in production for structured/aggregated logs
 
 
     class Config:

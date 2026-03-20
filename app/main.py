@@ -1,13 +1,28 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Logging must be initialised before any other app imports so that module-level
+# loggers in routers/services are configured from the start.
+from app.core.config import settings
+from app.core.logging_config import logging_manager
+
+logging_manager.setup(level=settings.LOG_LEVEL, json_format=settings.LOG_JSON)
+
+# ---- Register third-party sinks here (after setup) ----
+# Example:
+#   from app.core.logging_config import LogSink
+#   class SentrySink(LogSink):
+#       def emit(self, record):
+#           if record.levelno >= logging.ERROR:
+#               sentry_sdk.capture_message(record.getMessage())
+#   logging_manager.add_sink(SentrySink())
+
 from app.api.health import router as health_router
 from app.api.v1.ping import router as ping_router
 from app.api.v1.user import router as user_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.tenant import router as tenant_router
 from app.api.v1.cases import router as cases_router
-from app.core.config import settings
 
 app = FastAPI(
     title="FastAPI Multi-Tenant RLS API",

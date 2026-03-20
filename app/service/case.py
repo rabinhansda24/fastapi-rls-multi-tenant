@@ -1,10 +1,11 @@
-import logging
 from uuid import UUID
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-logger = logging.getLogger(__name__)
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 from app.crud.case import (
     get_case,
