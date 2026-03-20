@@ -17,6 +17,7 @@ A production-grade multi-tenant REST API built with FastAPI, PostgreSQL Row-Leve
 - [Environment Variables](#environment-variables)
 - [Testing](#testing)
 - [Project Structure](#project-structure)
+- [Logging](#logging)
 - [Make Targets](#make-targets)
 
 ---
@@ -116,9 +117,9 @@ FastAPI Router (app/api/v1/cases.py)
   │     ▼
   ├─ Depends(get_rls_session)
   │     │  Opens SQLAlchemy Session (as app_user)
-  │     │  SELECT set_config('app.tenant_id', '<uuid>', false)
-  │     │  SELECT set_config('app.user_id', '<uuid>', false)
-  │     │  Yields session (connection-scoped GUC now active)
+  │     │  SELECT set_config('app.tenant_id', '<uuid>', true)
+  │     │  SELECT set_config('app.user_id', '<uuid>', true)
+  │     │  Yields session (transaction-local GUC active; auto-reset on commit)
   │     ▼
   └─ create_case(case_in, db, principal)
         │
@@ -148,13 +149,14 @@ FastAPI Router (app/api/v1/cases.py)
 | Domain | `app/domain/` | Enums and domain types |
 | Deps | `app/deps/` | FastAPI dependency injection (auth, sessions) |
 | DB | `app/db/` | Session factories, connection setup |
-| Core | `app/core/` | Config, JWT/password security utilities |
+| Core | `app/core/` | Config, JWT/password security utilities, logging setup |
 
 ### Transaction Design
 
 - Each request gets one `Session` (connection) from the pool
-- `get_rls_session` sets GUC vars (`app.tenant_id`, `app.user_id`) on that connection before yielding
-- Service layer is responsible for `db.commit()` / `db.rollback()`
+- `get_rls_session` sets GUC vars (`app.tenant_id`, `app.user_id`) as **transaction-local** (`true`) before yielding
+- **Dependency layer owns the transaction boundary** — `get_rls_session` and `get_db` call `db.commit()` on success or `db.rollback()` on exception after the route handler returns
+- Service and CRUD layers call only `db.flush()` — never `db.commit()` — so all writes in a request are committed atomically
 - Session is always closed in the `finally` block regardless of outcome
 
 ### Idempotency Flow (Status Update)
@@ -171,11 +173,12 @@ PATCH /v1/cases/{case_id}/status
   ├─ INSERT INTO case_events (event_type='STATUS_CHANGED', idempotency_key)
   │     └─ IntegrityError (unique violation) → race condition detected
   │           → two clients retried simultaneously; only one INSERT wins
-  │           → rollback + re-query existing event → return it
-  └─ COMMIT
+  │           → SAVEPOINT rolled back (outer transaction with RLS context intact)
+  │           → re-query existing event → return it
+  └─ COMMIT (owned by get_rls_session dependency)
 ```
 
-The `UNIQUE(tenant_id, case_id, idempotency_key)` constraint is the safety net for concurrent retries. If two clients send the same `idempotency_key` simultaneously, only one `INSERT` succeeds at the database level. The loser gets an `IntegrityError`, rolls back, and re-reads the already-committed event — returning the same result as the winner. No duplicate events are ever created.
+The `UNIQUE(tenant_id, case_id, idempotency_key)` constraint is the safety net for concurrent retries. If two clients send the same `idempotency_key` simultaneously, only one `INSERT` succeeds at the database level. The loser gets an `IntegrityError` — the service uses a **SAVEPOINT** (`db.begin_nested()`) so only the nested write is rolled back. The outer transaction (and its transaction-local RLS GUC values) remains intact, allowing the recovery query to execute correctly. No duplicate events are ever created.
 
 ---
 
@@ -236,7 +239,7 @@ This system is designed to resist tenant isolation failures at every layer. The 
 | API | Missing tenant filter in query | DB-level RLS enforces it regardless |
 | ORM / CRUD | Developer forgets `tenant_id` WHERE clause | RLS `USING` policy filters rows silently |
 | SQL injection | Bypass application filters | Parameterized queries (SQLAlchemy ORM) + RLS as second line |
-| Connection pooling | Stale `app.tenant_id` leaks to next request | `get_rls_session` re-sets GUC on every request |
+| Connection pooling | Stale `app.tenant_id` leaks to next request | Transaction-local GUCs (`set_config(..., true)`) are auto-reset on commit; no stale context can survive pool return |
 | Superuser access | Bypass FORCE RLS | Application never connects as superuser; `app_user` is non-superuser |
 | Audit trail tampering | DELETE/UPDATE case events | DB triggers block mutation; append-only enforced at database level |
 | Token forgery | Fake `tenant_id` in JWT | JWT signed with `JWT_SECRET`; tampering causes signature verification failure |
@@ -259,11 +262,11 @@ Every request sets two PostgreSQL configuration variables (GUCs) on the active c
 
 ```python
 # In get_rls_session (app/deps/auth.py)
-db.execute(text("SELECT set_config('app.tenant_id', :tid, false)"), {"tid": str(principal.tenant_id)})
-db.execute(text("SELECT set_config('app.user_id', :uid, false)"),   {"uid": str(principal.user_id)})
+db.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(principal.tenant_id)})
+db.execute(text("SELECT set_config('app.user_id', :uid, true)"),   {"uid": str(principal.user_id)})
 ```
 
-PostgreSQL configuration variables (GUCs) are stored per connection. The `false` argument means the setting is connection-scoped (not transaction-scoped), so it persists for the lifetime of the connection but is not visible to other connections.
+PostgreSQL configuration variables (GUCs) are stored per connection. The `true` argument means the setting is **transaction-local** — it is automatically reset to its prior value when the transaction commits or rolls back. This is the correct mode for connection-pooled environments: after `get_rls_session` commits at the end of the request, the GUC values are cleared, so the connection can safely return to the pool without carrying stale tenant context.
 
 ### RLS Policies
 
@@ -329,17 +332,29 @@ This ensures an immutable audit trail regardless of application logic.
 
 ### Connection Pool Safety
 
-Because GUC variables are stored per connection, there is a real risk in connection-pooled environments:
+With session-scoped GUCs (`set_config(..., false)`), there would be a real risk in connection-pooled environments:
 
 ```
-Request A → sets app.tenant_id = "tenant-A"
-connection returned to pool
+Request A → sets app.tenant_id = "tenant-A"  (session-scoped)
+            commits, connection returned to pool
 
 Request B → gets the same connection
-            app.tenant_id is still "tenant-A" ← tenant leak
+            app.tenant_id is still "tenant-A" ← tenant leak!
 ```
 
-This system avoids that leak because `get_rls_session` sets tenant context **on every request** before yielding the session to any query. Since tenant context is injected at the start of each request and the session is request-scoped, there is no window where a connection can be reused with a stale tenant context. The application also uses `NullPool` in tests to guarantee connection isolation.
+This system eliminates that risk by using **transaction-local** GUCs (`set_config(..., true)`). When the dependency commits at the end of Request A, PostgreSQL automatically resets all transaction-local GUC values to their defaults. The connection returns to the pool clean — no tenant context remains.
+
+```
+Request A → sets app.tenant_id = "tenant-A"  (transaction-local)
+            COMMIT → GUC auto-reset to default
+            connection returned to pool
+
+Request B → gets the same connection
+            app.tenant_id = "" (unset) ← safe
+            get_rls_session sets app.tenant_id = "tenant-B"
+```
+
+The application also uses `NullPool` in tests to guarantee complete connection isolation between test cases.
 
 ---
 
@@ -620,12 +635,18 @@ curl -X POST http://localhost:8000/v1/cases/ \
 
 #### GET /v1/cases/
 
-List all cases for the authenticated tenant.
+List all cases for the authenticated tenant. Supports pagination.
 
 ```bash
-curl http://localhost:8000/v1/cases/ \
+curl "http://localhost:8000/v1/cases/?limit=20&offset=0" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+**Query parameters**
+| Parameter | Type | Default | Constraints | Description |
+|---|---|---|---|---|
+| `limit` | `int` | `50` | 1–200 | Maximum number of cases to return |
+| `offset` | `int` | `0` | ≥ 0 | Number of cases to skip |
 
 **Response 200**
 ```json
@@ -644,6 +665,7 @@ curl http://localhost:8000/v1/cases/ \
 | Status | Reason |
 |---|---|
 | 401 | Missing or invalid JWT |
+| 422 | Invalid pagination parameters |
 
 ---
 
@@ -813,6 +835,9 @@ cp .env.example .env   # edit with your values
 ```bash
 make up
 # or: sudo docker compose up -d --build
+
+# For development (hot-reload enabled):
+sudo docker compose --profile dev up -d --build
 ```
 
 ### 3. Run migrations
@@ -869,6 +894,9 @@ curl -X POST http://localhost:8000/v1/cases/ \
 | `ALEMBIC_DATABASE_URL` | Yes | SQLAlchemy URL for `app_owner` migration connection |
 | `JWT_SECRET` | Yes | JWT signing key (keep secret, min 32 chars recommended). `JWT_SECRET_KEY` and legacy `SECRET_KEY` are also accepted |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Yes | JWT lifetime in minutes (e.g. `60`) |
+| `CORS_ORIGINS` | No | Comma-separated list of allowed CORS origins (e.g. `http://localhost:3000,https://app.example.com`). Defaults to none |
+| `LOG_LEVEL` | No | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Defaults to `INFO` |
+| `LOG_JSON` | No | Set to `true` to emit structured JSON logs (recommended in production). Defaults to `false` (human-readable text) |
 | `TEST_ADMIN_DATABASE_URL` | Test only | Superuser URL for creating/dropping test databases (e.g. `postgresql+psycopg://postgres:postgres@db:5432/postgres`) |
 
 ---
@@ -982,6 +1010,7 @@ rls-firstapi/
 │   │       └── ping.py            # GET /ping/
 │   ├── core/
 │   │   ├── config.py              # Settings (pydantic-settings)
+│   │   ├── logging_config.py      # LoggingManager, LogSink ABC, get_logger()
 │   │   ├── security.py            # JWT encode/decode, password hash/verify
 │   │   └── tests/
 │   │       └── test_security.py
@@ -991,11 +1020,11 @@ rls-firstapi/
 │   │   ├── user.py                # ORM queries for users
 │   │   └── ping.py
 │   ├── db/
-│   │   ├── public.py              # get_db (app_owner session factory)
+│   │   ├── public.py              # get_db (unauthenticated session, transaction owner)
 │   │   ├── rls.py                 # RLS session utilities
 │   │   └── session.py             # SessionLocal (app_user)
 │   ├── deps/
-│   │   └── auth.py                # get_principal, get_rls_session, get_current_user
+│   │   └── auth.py                # get_principal (JWT decode), get_rls_session (RLS + transaction owner)
 │   ├── domain/
 │   │   ├── case_enum.py           # CaseStatus, CaseEventType
 │   │   └── roles.py               # UserRole
@@ -1009,7 +1038,7 @@ rls-firstapi/
 │   │   ├── auth.py                # TokenClaims, LoginRequest/Response, RegisterRequest/Response
 │   │   ├── case.py                # CaseCreate, CaseResponse, CaseEventCreate, etc.
 │   │   ├── tenant.py              # TenantResponse
-│   │   └── user.py                # CreateUser, UserResponse, CurrentUser
+│   │   └── user.py                # CreateUser, UserResponse
 │   ├── service/
 │   │   ├── auth.py                # register_tenant, login_tenant
 │   │   ├── case.py                # create_new_case, update_case_status, etc.
@@ -1035,13 +1064,65 @@ rls-firstapi/
 │       └── f10adf536bc9_*.py      # Disable RLS on identity tables
 ├── app/db/init/
 │   └── 001_roles.sql              # Creates app_owner, app_user roles (Docker init)
-├── docker-compose.yml             # Services: db, api, test (profile)
+├── docker-compose.yml             # Services: db, api (prod), api-dev (--profile dev, hot-reload), test (profile)
 ├── Dockerfile
 ├── Makefile
 ├── pyproject.toml
 ├── .env                           # Production env vars (git-ignored)
 └── .env.test                      # Test env vars (git-ignored)
 ```
+
+---
+
+## Logging
+
+All logging is centralised through `app/core/logging_config.py`.
+
+### LoggingManager
+
+A singleton `logging_manager` is initialised once in `app/main.py` before any other import:
+
+```python
+from app.core.config import settings
+from app.core.logging_config import logging_manager
+
+logging_manager.setup(level=settings.LOG_LEVEL, json_format=settings.LOG_JSON)
+```
+
+Call `get_logger(__name__)` anywhere in the codebase to obtain a standard `logging.Logger` that routes through the manager:
+
+```python
+from app.core.logging_config import get_logger
+
+logger = get_logger(__name__)
+logger.info("Case created", extra={"case_id": str(case.id)})
+```
+
+### Output formats
+
+| `LOG_JSON` | Format | Use case |
+|---|---|---|
+| `false` (default) | Coloured, human-readable text (TTY-aware, colours stripped if not a TTY) | Local development |
+| `true` | Structured JSON — one object per line with timestamp, level, logger, message, and any `extra` fields | Production / log aggregators (Datadog, Loki, CloudWatch, etc.) |
+
+### Adding a third-party sink
+
+`LogSink` is an abstract base class. Implement it and register it with `logging_manager.add_sink()` **after** calling `setup()`:
+
+```python
+import logging
+from app.core.logging_config import LogSink, logging_manager
+
+class DatadogSink(LogSink):
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.ERROR:
+            # forward to Datadog or any external platform
+            datadog_client.send(record.getMessage())
+
+logging_manager.add_sink(DatadogSink())
+```
+
+All log records — including those already written to the terminal — are forwarded to every registered sink. The terminal handler is always active regardless of whether sinks are configured.
 
 ---
 
