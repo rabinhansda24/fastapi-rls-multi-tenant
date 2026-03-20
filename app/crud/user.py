@@ -28,36 +28,18 @@ def create_user(db: Session, *, user_in: CreateUser, tenant_id: UUID, password_h
 
 def get_user(db: Session, *, user_id: UUID, tenant_id: UUID) -> UserResponse | None:
     """Get a user by ID and tenant ID. This ensures that users can only access their own tenant's data."""
-    try:
-        stmt = select(User).where(User.id == user_id, User.tenant_id == tenant_id)
-        result = db.execute(stmt).scalar_one_or_none()
-        if result is None:
-            return None
-        return UserResponse.model_validate(result)
-    except Exception as e:
-        raise e
-    
+    stmt = select(User).where(User.id == user_id, User.tenant_id == tenant_id)
+    result = db.execute(stmt).scalar_one_or_none()
+    return UserResponse.model_validate(result) if result else None
+
 
 def list_users(db: Session, tenant_id: UUID) -> list[UserResponse]:
-    """
-    List all users for a given tenant.
-    """
-    try:
-        stmt = select(User).where(User.tenant_id == tenant_id)
-        results = db.execute(stmt).scalars().all()
-        return [UserResponse.model_validate(user) for user in results]
-    except Exception as e:
-        raise e
-    
+    """List all users for a given tenant."""
+    stmt = select(User).where(User.tenant_id == tenant_id)
+    return [UserResponse.model_validate(u) for u in db.execute(stmt).scalars().all()]
+
 def get_user_by_email(db: Session, *, email: str, tenant_id: UUID) -> UserFullResponse | None:
-    """
-    Get a user by email and tenant ID. This can be useful for authentication and user management operations.
-    """
-    try:
-        stmt = select(User).where(User.email == email, User.tenant_id == tenant_id)
-        result = db.execute(stmt).scalar_one_or_none()
-        if result is None:
-            return None
-        return UserFullResponse.model_validate(result)
-    except Exception as e:
-        raise e
+    """Get a user by email and tenant ID for authentication."""
+    stmt = select(User).where(User.email == email, User.tenant_id == tenant_id)
+    result = db.execute(stmt).scalar_one_or_none()
+    return UserFullResponse.model_validate(result) if result else None

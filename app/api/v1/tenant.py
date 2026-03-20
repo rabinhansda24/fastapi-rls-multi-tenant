@@ -12,11 +12,8 @@ router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
 @router.get("/{tenant_id}", response_model=TenantResponse, summary="Get a tenant by ID", description="Retrieve a tenant by its unique ID.")
 async def get_tenant_by_id(tenant_id: UUID, db=Depends(get_db)):
-    try:
-        tenant = get_tenant(db, tenant_id=tenant_id)
-        if tenant is None:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-        return tenant
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    tenant = get_tenant(db, tenant_id=tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return tenant
     

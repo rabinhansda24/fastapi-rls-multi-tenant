@@ -1,13 +1,13 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
 
 from app.domain.roles import UserRole
 
 
 class CreateUser(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8)
     role: UserRole
 
 class UserFullResponse(BaseModel):
@@ -31,5 +31,3 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
-class CurrentUser(UserResponse):
-    pass
