@@ -1,30 +1,15 @@
+import logging
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 
 from app.domain.case_enum import CaseEventType, CaseStatus
 from app.models.case import Case
 from app.models.case_events import CaseEvent
 from app.schemas.case import CaseCreate, CaseEventCreate
 
-def create_case(db: Session, *, case_in: CaseCreate, tenant_id: UUID, created_by: UUID) -> Case:
-    """
-    Create a new case. The tenant_id and created_by are required to ensure that the case is associated with the correct tenant and user.
-    """
-    try:
-        case = Case(
-            tenant_id=tenant_id,
-            created_by=created_by,
-            status=case_in.status
-        )
-        db.add(case)
-        db.commit()
-        db.refresh(case)
-        return case
-    except Exception as e:
-        db.rollback()
-        raise e
-    
 def create_case_no_commit(db: Session, *, case_in: CaseCreate, tenant_id: UUID, created_by: UUID) -> Case:
     """
     Create a new case without committing the transaction. This can be useful when you want to create a case and then perform additional operations (like creating related events) before committing.
@@ -40,54 +25,19 @@ def create_case_no_commit(db: Session, *, case_in: CaseCreate, tenant_id: UUID, 
     return case
     
 def get_case(db: Session, *, case_id: UUID) -> Case | None:
-    """
-    Get a case by its unique ID. This operation should be accessible to users who have permissions to view case information, such as tenant managers and supervisors.
-    """
-    try:
-        stmt = select(Case).where(Case.id == case_id)
-        result = db.execute(stmt).scalar_one_or_none()
-        return result
-    except Exception as e:
-        raise e
-    
-def list_cases(db: Session) -> list[Case]:
-    """
-    List all cases for a given tenant. This operation should be accessible to users who have permissions to view case information, such as tenant managers and supervisors.
-    """
-    try:
-        stmt = select(Case)
-        results = db.execute(stmt).scalars().all()
-        return results
-    except Exception as e:
-        raise e
+    stmt = select(Case).where(Case.id == case_id)
+    return db.execute(stmt).scalar_one_or_none()
+
+def list_cases(db: Session, *, limit: int = 50, offset: int = 0) -> list[Case]:
+    stmt = select(Case).limit(limit).offset(offset)
+    return db.execute(stmt).scalars().all()
     
 
-def create_case_event(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID, created_by: UUID) -> CaseEvent:
-    """
-    Create a new case event. The tenant_id and created_by are required to ensure that the event is associated with the correct tenant and user.
-    """
-    try:
-        event = CaseEvent(
-            tenant_id=tenant_id,
-            case_id=event_in.case_id,
-            actor_id=created_by,
-            event_type=event_in.event_type,
-            payload=event_in.payload
-        )
-        db.add(event)
-        db.commit()
-        db.refresh(event)
-        return event
-    except Exception as e:
-        db.rollback()
-        raise e
-    
 def create_case_event_no_commit(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID, created_by: UUID) -> CaseEvent:
     """
     Create a new case event without committing the transaction. This can be useful when you want to create an event and then perform additional operations before committing.
     The tenant_id and created_by are required to ensure that the event is associated with the correct tenant and user.
     """
-    print("create_case_event_no_commit called")
     try:
         event = CaseEvent(
             tenant_id=tenant_id,
@@ -97,26 +47,17 @@ def create_case_event_no_commit(db: Session, *, event_in: CaseEventCreate, tenan
             payload=event_in.payload,
             idempotency_key=event_in.idempotency_key
         )
-        print(f"Event object created {event}")
         db.add(event)
         db.flush()  # Flush to assign an ID to the event, but do not commit yet
-        print(f"CaseEvent added: {event.id}")
+        logger.debug("CaseEvent flushed: %s", event.id)
         return event
     except Exception as e:
         db.rollback()
         raise e
     
 def get_case_events(db: Session, *, case_id: UUID) -> list[CaseEvent]:
-    """
-    Get all events for a given case. This operation should be accessible to users who have permissions to view case information, such as tenant managers and supervisors.
-    """
-    try:
-        stmt = select(CaseEvent).where(CaseEvent.case_id == case_id)
-        results = db.execute(stmt).scalars().all()
-        print(f"Retrieved {len(results)} events for case_id {case_id}")
-        return results
-    except Exception as e:
-        raise e
+    stmt = select(CaseEvent).where(CaseEvent.case_id == case_id).order_by(CaseEvent.event_ts)
+    return db.execute(stmt).scalars().all()
     
 def update_case_status_no_commit(db: Session, *, case: Case, new_status: CaseStatus) -> Case:
     """
@@ -128,15 +69,8 @@ def update_case_status_no_commit(db: Session, *, case: Case, new_status: CaseSta
     return case
 
 def get_case_by_idempotency_key(db: Session, *, case_id: UUID, idempotency_key: str) -> CaseEvent | None:
-    """
-    Get a case event by its unique ID and idempotency key. This can be useful to ensure that duplicate events are not created when the same request is retried.
-    """
-    try:
-        stmt = select(CaseEvent).where(CaseEvent.case_id == case_id, CaseEvent.idempotency_key == idempotency_key)
-        result = db.execute(stmt).scalar_one_or_none()
-        return result
-    except Exception as e:
-        raise e
+    stmt = select(CaseEvent).where(CaseEvent.case_id == case_id, CaseEvent.idempotency_key == idempotency_key)
+    return db.execute(stmt).scalar_one_or_none()
     
 def create_status_change_event_no_commit(
     db: Session,

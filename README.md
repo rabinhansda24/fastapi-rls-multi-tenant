@@ -211,7 +211,7 @@ All protected endpoints:
 |---|---|
 | Algorithm | HS256 |
 | Library | `python-jose` |
-| Signing key | `SECRET_KEY` env var |
+| Signing key | `JWT_SECRET` env var |
 | Expiry | `ACCESS_TOKEN_EXPIRE_MINUTES` env var |
 | Claims | `sub`, `user_id`, `tenant_id`, `exp` |
 
@@ -239,7 +239,7 @@ This system is designed to resist tenant isolation failures at every layer. The 
 | Connection pooling | Stale `app.tenant_id` leaks to next request | `get_rls_session` re-sets GUC on every request |
 | Superuser access | Bypass FORCE RLS | Application never connects as superuser; `app_user` is non-superuser |
 | Audit trail tampering | DELETE/UPDATE case events | DB triggers block mutation; append-only enforced at database level |
-| Token forgery | Fake `tenant_id` in JWT | JWT signed with `SECRET_KEY`; tampering causes signature verification failure |
+| Token forgery | Fake `tenant_id` in JWT | JWT signed with `JWT_SECRET`; tampering causes signature verification failure |
 
 **Defense in depth:** RLS is a hard database constraint, not an application convention. Even if application code is buggy or a developer makes a mistake, PostgreSQL will not return or accept cross-tenant rows.
 
@@ -867,7 +867,7 @@ curl -X POST http://localhost:8000/v1/cases/ \
 |---|---|---|
 | `DATABASE_URL` | Yes | SQLAlchemy URL for `app_user` runtime connection (e.g. `postgresql+psycopg://app_user:pass@db:5432/appdb`) |
 | `ALEMBIC_DATABASE_URL` | Yes | SQLAlchemy URL for `app_owner` migration connection |
-| `SECRET_KEY` | Yes | JWT signing key (keep secret, min 32 chars recommended) |
+| `JWT_SECRET` | Yes | JWT signing key (keep secret, min 32 chars recommended). `JWT_SECRET_KEY` and legacy `SECRET_KEY` are also accepted |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Yes | JWT lifetime in minutes (e.g. `60`) |
 | `TEST_ADMIN_DATABASE_URL` | Test only | Superuser URL for creating/dropping test databases (e.g. `postgresql+psycopg://postgres:postgres@db:5432/postgres`) |
 

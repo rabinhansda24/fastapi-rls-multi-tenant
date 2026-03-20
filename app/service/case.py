@@ -1,18 +1,20 @@
+import logging
 from uuid import UUID
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
+logger = logging.getLogger(__name__)
+
 from app.crud.case import (
-    get_case, 
-    list_cases, 
-    create_case_event, 
-    get_case_events, 
-    create_case_no_commit, 
+    get_case,
+    list_cases,
+    get_case_events,
+    create_case_no_commit,
     create_case_event_no_commit,
     update_case_status_no_commit,
     get_case_by_idempotency_key,
-    create_status_change_event_no_commit
+    create_status_change_event_no_commit,
 )
 from app.schemas.case import CaseCreate, CaseEventCreate, CaseStatusUpdateRequest, CaseStatusUpdateResponse, CaseResponse
 from app.domain.case_enum import CaseEventType, CaseStatus
@@ -22,44 +24,41 @@ def create_new_case(db: Session, *, case_in: CaseCreate, tenant_id: UUID, create
     Create a new case. The tenant_id and created_by are required to ensure that the case is associated with the correct tenant and user.
     """
     try:
-        
         case = create_case_no_commit(db, case_in=case_in, tenant_id=tenant_id, created_by=created_by)
-        print(f"Case created {case.id}")
         idempotency_key = f"case_created:{case.id}"
-        event_payload: dict = {}
-        event_payload["case_id"] = str(case.id)
-        event_payload["status"] = case.status
+        event_payload: dict = {
+            "case_id": str(case.id),
+            "status": case.status,
+        }
         case_event_in = CaseEventCreate(
             case_id=case.id,
             event_type=CaseEventType.CASE_CREATED,
             payload=event_payload,
             idempotency_key=idempotency_key
         )
-        case_event_created = create_case_event_no_commit(db, event_in=case_event_in, tenant_id=tenant_id, created_by=created_by)
+        create_case_event_no_commit(db, event_in=case_event_in, tenant_id=tenant_id, created_by=created_by)
         db.commit()
-        db.refresh(case)  # Refresh to get the latest state from the 
-        print(f"CaseEvent created: {case_event_created.id}")
-        case_response = CaseResponse(
+        db.refresh(case)
+        return CaseResponse(
             id=case.id,
             tenant_id=case.tenant_id,
             created_by=case.created_by,
             status=case.status,
             created_at=case.created_at
         )
-        print(f"Case created {case_response}")
-        return case_response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to create case")
+        raise HTTPException(status_code=500, detail="Internal server error")
     
-def get_all_cases(db: Session) -> list:
+def get_all_cases(db: Session, *, limit: int = 50, offset: int = 0) -> list:
     """
-    List all cases for a given tenant. This operation should be accessible to users who have permissions to view case information, such as tenant managers and supervisors.
+    List all cases for a given tenant with pagination.
     """
     try:
-        cases = list_cases(db)
-        return cases
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return list_cases(db, limit=limit, offset=offset)
+    except Exception:
+        logger.exception("Failed to list cases")
+        raise HTTPException(status_code=500, detail="Internal server error")
     
 def get_case_by_id(db: Session, *, case_id: UUID):
     """
@@ -67,8 +66,9 @@ def get_case_by_id(db: Session, *, case_id: UUID):
     """
     try:
         case = get_case(db, case_id=case_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to fetch case %s", case_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     return case
@@ -77,25 +77,27 @@ def append_case_event(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID
     """
     Create a new case event. The tenant_id and created_by are required to ensure that the event is associated with the correct tenant and user.
     """
+    case = get_case(db, case_id=event_in.case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
     try:
-        case = get_case(db, case_id=event_in.case_id)
-        if case is None:
-            raise HTTPException(status_code=404, detail="Case not found")
-        
-        event = create_case_event(db, event_in=event_in, tenant_id=tenant_id, created_by=created_by)
+        event = create_case_event_no_commit(db, event_in=event_in, tenant_id=tenant_id, created_by=created_by)
+        db.commit()
+        db.refresh(event)
         return event
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to append event to case %s", event_in.case_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
     
 def list_events_for_case(db: Session, *, case_id: UUID):
     """
     List all events for a given case. This operation should be accessible to users who have permissions to view case information, such as tenant managers and supervisors.
     """
     try:
-        events = get_case_events(db, case_id=case_id)
-        return events
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return get_case_events(db, case_id=case_id)
+    except Exception:
+        logger.exception("Failed to list events for case %s", case_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
     
 
 def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_by: UUID, request: CaseStatusUpdateRequest) -> CaseStatusUpdateResponse:
@@ -176,5 +178,6 @@ def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_b
                 event_type=existing_event.event_type
             )
         else:
-            raise HTTPException(status_code=500, detail="Integrity error occurred but no existing event found")
+            logger.error("IntegrityError on idempotency key %s but no existing event found", request.idempotency_key)
+            raise HTTPException(status_code=500, detail="Internal server error")
     

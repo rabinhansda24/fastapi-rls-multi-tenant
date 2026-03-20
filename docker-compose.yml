@@ -42,12 +42,25 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    command: >
-      uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8000
-      --reload
-      --reload-dir /app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  api-dev:
+    build: .
+    container_name: app_api_dev
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app:rw
+      - ./alembic:/app/alembic:rw
+      - ./alembic.ini:/app/alembic.ini:rw
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    profiles:
+      - dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
 
   test:
     build: .

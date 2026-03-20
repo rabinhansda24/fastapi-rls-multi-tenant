@@ -28,4 +28,4 @@ class CaseEvent(Base):
     )
 
     # Relationships
-    case = relationship("Case", back_populates="events", lazy="joined")
+    case = relationship("Case", back_populates="events", lazy="noload")

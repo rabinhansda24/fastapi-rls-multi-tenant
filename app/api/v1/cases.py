@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List
 
 from app.schemas.case import CaseCreate, CaseEventCreate, CaseResponse, CaseEventResponse, CaseStatusUpdateRequest, CaseStatusUpdateResponse
-from app.service.case import create_new_case, get_all_cases, get_case_by_id, append_case_event, list_events_for_case, update_case_status, update_case_status_no_commit, get_case_by_idempotency_key, create_status_change_event_no_commit
+from app.service.case import create_new_case, get_all_cases, get_case_by_id, append_case_event, list_events_for_case, update_case_status
 
 from app.deps.auth import get_rls_session, get_principal
 
@@ -19,11 +19,17 @@ async def create_case(case_in: CaseCreate, db=Depends(get_rls_session), principa
     return create_new_case(db, case_in=case_in, tenant_id=principal.tenant_id, created_by=principal.user_id)
 
 @router.get("/", response_model=List[CaseResponse], summary="List all cases", description="List all cases for the current tenant.")
-async def list_cases(db=Depends(get_rls_session)):
+async def list_cases(
+    db=Depends(get_rls_session),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
     """
     List all cases for the current tenant.
+    - **limit**: Maximum number of cases to return (1–200, default 50)
+    - **offset**: Number of cases to skip for pagination
     """
-    return get_all_cases(db)
+    return get_all_cases(db, limit=limit, offset=offset)
 
 @router.get("/{case_id}", response_model=CaseResponse, summary="Get case by ID", description="Get a case by its unique ID.")
 async def get_case(case_id: UUID, db=Depends(get_rls_session)):
