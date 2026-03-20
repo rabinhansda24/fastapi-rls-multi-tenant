@@ -30,19 +30,20 @@ def get_principal(
 def get_rls_session(principal: TokenClaims = Depends(get_principal)):
     db: Session = SessionLocal()
     try:
-        # set tenant context for this connection
+        # true = transaction-local: config is auto-reset on COMMIT/ROLLBACK, pool-safe
         db.execute(
-            text("SELECT set_config('app.tenant_id', :tid, false)"),
+            text("SELECT set_config('app.tenant_id', :tid, true)"),
             {"tid": str(principal.tenant_id)},
         )
-
         db.execute(
-            text("SELECT set_config('app.user_id', :uid, false)"),
+            text("SELECT set_config('app.user_id', :uid, true)"),
             {"uid": str(principal.user_id)},
         )
-
         yield db
-
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

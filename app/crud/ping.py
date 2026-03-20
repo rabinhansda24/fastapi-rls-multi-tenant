@@ -9,8 +9,7 @@ from app.schemas.ping import CreatePing, PingResponse
 def create_ping(db: Session, *, ping_in: CreatePing) -> PingResponse:
     ping = Ping(name=ping_in.name, age=ping_in.age)
     db.add(ping)
-    db.commit()
-    db.refresh(ping)
+    db.flush()  # dependency commits the transaction
     return PingResponse.model_validate(ping)
 
 

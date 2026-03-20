@@ -37,8 +37,7 @@ def create_new_case(db: Session, *, case_in: CaseCreate, tenant_id: UUID, create
             idempotency_key=idempotency_key
         )
         create_case_event_no_commit(db, event_in=case_event_in, tenant_id=tenant_id, created_by=created_by)
-        db.commit()
-        db.refresh(case)
+        # no commit here — dependency commits the transaction after this returns
         return CaseResponse(
             id=case.id,
             tenant_id=case.tenant_id,
@@ -46,7 +45,7 @@ def create_new_case(db: Session, *, case_in: CaseCreate, tenant_id: UUID, create
             status=case.status,
             created_at=case.created_at
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to create case")
         raise HTTPException(status_code=500, detail="Internal server error")
     
@@ -81,10 +80,8 @@ def append_case_event(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     try:
-        event = create_case_event_no_commit(db, event_in=event_in, tenant_id=tenant_id, created_by=created_by)
-        db.commit()
-        db.refresh(event)
-        return event
+        # no commit — dependency commits after this returns
+        return create_case_event_no_commit(db, event_in=event_in, tenant_id=tenant_id, created_by=created_by)
     except Exception:
         logger.exception("Failed to append event to case %s", event_in.case_id)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -125,48 +122,32 @@ def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_b
         raise HTTPException(status_code=404, detail="Case not found")
     
     old_status = case.status
-    if old_status == request.status:
-        # still write an event? In regulated systems, usually NO unless you want a heartbeat.
-        # We'll treat this as idempotent no-op but still allow client retries via idempotency key.
-        pass
 
     try:
-        
-        # Re-check idempotency key inside transaction to prevent race conditions
-        existing_event = get_case_by_idempotency_key(db, case_id=case_id, idempotency_key=request.idempotency_key)
-        if existing_event:
-            payload = existing_event.payload or {}
-            new_status = payload.get("new_status")
-            return CaseStatusUpdateResponse(
+        # SAVEPOINT: rolls back only these writes on IntegrityError, preserving
+        # the outer transaction (and its transaction-local set_config RLS context).
+        with db.begin_nested():
+            update_case_status_no_commit(db, case=case, new_status=request.status)
+            event = create_status_change_event_no_commit(
+                db,
+                tenant_id=tenant_id,
                 case_id=case_id,
-                new_status=CaseStatus(new_status) if new_status else None,
-                event_id=existing_event.id,
-                event_type=existing_event.event_type
+                created_by=created_by,
+                old_status=old_status,
+                new_status=request.status,
+                idempotency_key=request.idempotency_key,
+                reason=request.reason
             )
-        # Update case status
-        update_case_status_no_commit(db, case=case, new_status=request.status)
-        # Create status change event
-        event = create_status_change_event_no_commit(
-            db,
-            tenant_id=tenant_id,
-            case_id=case_id,
-            created_by=created_by,
-            old_status=old_status,
-            new_status=request.status,
-            idempotency_key=request.idempotency_key,
-            reason=request.reason
-        )
-        db.commit()  # Commit the transaction to save both the case update and the event atomically
+        # savepoint released — dependency commits the outer transaction
         return CaseStatusUpdateResponse(
             case_id=case_id,
             new_status=request.status,
             event_id=event.id,
             event_type=event.event_type
         )
-    except IntegrityError as e:
-        # This can happen if there's a unique constraint violation on the idempotency key, which means another transaction has already created an event with this idempotency key.
-        # In that case, we can safely assume that the event was created and return the existing event's details.
-        db.rollback()  # Rollback the failed transaction before querying for the existing event
+    except IntegrityError:
+        # Duplicate idempotency key — savepoint rolled back, outer transaction intact.
+        # Read the existing event (RLS context is still active).
         existing_event = get_case_by_idempotency_key(db, case_id=case_id, idempotency_key=request.idempotency_key)
         if existing_event:
             payload = existing_event.payload or {}
@@ -177,7 +158,6 @@ def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_b
                 event_id=existing_event.id,
                 event_type=existing_event.event_type
             )
-        else:
-            logger.error("IntegrityError on idempotency key %s but no existing event found", request.idempotency_key)
-            raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error("IntegrityError on idempotency key %s but no existing event found", request.idempotency_key)
+        raise HTTPException(status_code=500, detail="Internal server error")
     

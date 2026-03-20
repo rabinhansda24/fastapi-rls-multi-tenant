@@ -35,25 +35,19 @@ def list_cases(db: Session, *, limit: int = 50, offset: int = 0) -> list[Case]:
 
 def create_case_event_no_commit(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID, created_by: UUID) -> CaseEvent:
     """
-    Create a new case event without committing the transaction. This can be useful when you want to create an event and then perform additional operations before committing.
-    The tenant_id and created_by are required to ensure that the event is associated with the correct tenant and user.
+    Create a new case event without committing the transaction.
     """
-    try:
-        event = CaseEvent(
-            tenant_id=tenant_id,
-            case_id=event_in.case_id,
-            actor_id=created_by,
-            event_type=event_in.event_type,
-            payload=event_in.payload,
-            idempotency_key=event_in.idempotency_key
-        )
-        db.add(event)
-        db.flush()  # Flush to assign an ID to the event, but do not commit yet
-        logger.debug("CaseEvent flushed: %s", event.id)
-        return event
-    except Exception as e:
-        db.rollback()
-        raise e
+    event = CaseEvent(
+        tenant_id=tenant_id,
+        case_id=event_in.case_id,
+        actor_id=created_by,
+        event_type=event_in.event_type,
+        payload=event_in.payload,
+        idempotency_key=event_in.idempotency_key,
+    )
+    db.add(event)
+    db.flush()
+    return event
     
 def get_case_events(db: Session, *, case_id: UUID) -> list[CaseEvent]:
     stmt = select(CaseEvent).where(CaseEvent.case_id == case_id).order_by(CaseEvent.event_ts)

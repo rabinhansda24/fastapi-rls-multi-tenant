@@ -57,8 +57,8 @@ class TestCreateNewCase:
 
         assert result.id == case_id
         assert result.status == CaseStatus.OPEN
-        mock_db.commit.assert_called_once()
-        mock_db.refresh.assert_called_once_with(fake_case)
+        mock_db.commit.assert_not_called()
+        mock_db.refresh.assert_not_called()
 
     @patch("app.service.case.create_case_no_commit")
     @patch("app.service.case.create_case_event_no_commit")
@@ -168,7 +168,8 @@ class TestUpdateCaseStatus:
 
         assert result.new_status == CaseStatus.IN_REVIEW
         assert result.event_id == event_id
-        mock_db.commit.assert_called_once()
+        mock_db.begin_nested.assert_called_once()
+        mock_db.commit.assert_not_called()
 
     @patch("app.service.case.get_case_by_idempotency_key")
     def test_idempotency_returns_existing_event(

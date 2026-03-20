@@ -98,7 +98,7 @@ class TestLogin:
     def test_login_nonexistent_tenant_slug_returns_403(self, client):
         resp = client.post(
             "/v1/auth/this-slug-does-not-exist/login",
-            json={"email": "x@x.com", "password": "pass"},
+            json={"email": "x@x.com", "password": "password1"},
         )
         assert resp.status_code == 403
 

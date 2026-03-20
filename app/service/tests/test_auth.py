@@ -112,7 +112,7 @@ class TestLoginTenant:
             with pytest.raises(ValueError, match="Invalid email or password"):
                 login_tenant(
                     mock_db,
-                    LoginRequest(email="no@one.com", password="pw"),
+                    LoginRequest(email="no@one.com", password="password1"),
                     tenant,
                 )
 
@@ -124,7 +124,7 @@ class TestLoginTenant:
                 with pytest.raises(ValueError, match="Invalid email or password"):
                     login_tenant(
                         mock_db,
-                        LoginRequest(email="u@x.com", password="wrong"),
+                        LoginRequest(email="u@x.com", password="wrongpass"),
                         tenant,
                     )
 
@@ -137,7 +137,7 @@ class TestLoginTenant:
                     mock_token.return_value = MagicMock(access_token="tok123", token_type="bearer")
                     result = login_tenant(
                         mock_db,
-                        LoginRequest(email="u@x.com", password="correct"),
+                        LoginRequest(email="u@x.com", password="correctpass"),
                         tenant,
                     )
         assert result.access_token == "tok123"
@@ -155,7 +155,7 @@ class TestLoginTenant:
                     mock_token.return_value = MagicMock(access_token="t", token_type="bearer")
                     login_tenant(
                         mock_db,
-                        LoginRequest(email="u@x.com", password="correct"),
+                        LoginRequest(email="u@x.com", password="correctpass"),
                         tenant,
                     )
                     call_args = mock_token.call_args[1]["token_claims"]

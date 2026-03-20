@@ -9,21 +9,16 @@ def create_user(db: Session, *, user_in: CreateUser, tenant_id: UUID, password_h
     """
     Create a new user. The tenant_id is required to ensure that the user is associated with the correct tenant.
     """
-    try:
-        user = User(
-            name=user_in.name,
-            email=user_in.email,
-            password_hash=password_hash,
-            role=user_in.role,
-            tenant_id=tenant_id
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        return UserResponse.model_validate(user)
-    except Exception as e:
-        db.rollback()
-        raise e
+    user = User(
+        name=user_in.name,
+        email=user_in.email,
+        password_hash=password_hash,
+        role=user_in.role,
+        tenant_id=tenant_id,
+    )
+    db.add(user)
+    db.flush()  # populate id via RETURNING; dependency commits the transaction
+    return UserResponse.model_validate(user)
     
 
 def get_user(db: Session, *, user_id: UUID, tenant_id: UUID) -> UserResponse | None:

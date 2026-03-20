@@ -106,17 +106,15 @@ def TestSessionLocal(test_db_url):
     # Use app_user (DATABASE_URL) against the test DB — mirrors production so
     # RLS grants and FORCE ROW LEVEL SECURITY behave identically to production.
     #
-    # pool_size=1, max_overflow=0: use a single persistent connection so that
-    # session-level set_config('app.tenant_id', ...) survives across the
-    # session.commit() → session.refresh() boundary inside create_new_case.
-    # SQLAlchemy 2.0 releases the connection back to the pool after commit;
-    # with NullPool that means a fresh connection (no set_config), causing the
-    # post-commit refresh to fail the RLS USING policy.  With pool_size=1 the
-    # same physical connection is reused, keeping the RLS context intact.
+    # NullPool: each request gets a fresh connection, matching how production
+    # connections return to the pool after a request. The pool_size=1 workaround
+    # is no longer needed because set_config uses is_local=true (transaction-local)
+    # and there are no mid-request commits — the dependency commits exactly once
+    # at the end of each request, keeping the RLS context intact throughout.
     app_user_base = must_env("DATABASE_URL").rsplit("/", 1)[0]
     test_db_name = test_db_url.rsplit("/", 1)[-1]
     runtime_url = f"{app_user_base}/{test_db_name}"
-    engine = create_engine(runtime_url, pool_size=1, max_overflow=0)
+    engine = create_engine(runtime_url, poolclass=NullPool)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     yield Session
     engine.dispose()
@@ -131,6 +129,10 @@ def override_get_db(TestSessionLocal):
         db = TestSessionLocal()
         try:
             yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -149,15 +151,20 @@ def override_get_rls_session(TestSessionLocal):
     def _rls_session_override(principal: TokenClaims = Depends(get_principal)):
         db = TestSessionLocal()
         try:
+            # true = transaction-local, matching production get_rls_session
             db.execute(
-                text("SELECT set_config('app.tenant_id', :tid, false)"),
+                text("SELECT set_config('app.tenant_id', :tid, true)"),
                 {"tid": str(principal.tenant_id)},
             )
             db.execute(
-                text("SELECT set_config('app.user_id', :uid, false)"),
+                text("SELECT set_config('app.user_id', :uid, true)"),
                 {"uid": str(principal.user_id)},
             )
             yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
