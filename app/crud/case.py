@@ -23,13 +23,16 @@ def create_case_no_commit(db: Session, *, case_in: CaseCreate, tenant_id: UUID, 
     )
     db.add(case)
     db.flush()  # Flush to assign an ID to the case, but do not commit yet
+    logger.info("Created case case_id=%s tenant_id=%s created_by=%s status=%s", case.id, tenant_id, created_by, case.status)
     return case
     
 def get_case(db: Session, *, case_id: UUID) -> Case | None:
+    logger.debug("Fetching case case_id=%s", case_id)
     stmt = select(Case).where(Case.id == case_id)
     return db.execute(stmt).scalar_one_or_none()
 
 def list_cases(db: Session, *, limit: int = 50, offset: int = 0) -> list[Case]:
+    logger.debug("Listing cases limit=%s offset=%s", limit, offset)
     stmt = select(Case).limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
     
@@ -48,9 +51,11 @@ def create_case_event_no_commit(db: Session, *, event_in: CaseEventCreate, tenan
     )
     db.add(event)
     db.flush()
+    logger.info("Created case event event_id=%s case_id=%s event_type=%s", event.id, event.case_id, event.event_type)
     return event
     
 def get_case_events(db: Session, *, case_id: UUID) -> list[CaseEvent]:
+    logger.debug("Fetching case events case_id=%s", case_id)
     stmt = select(CaseEvent).where(CaseEvent.case_id == case_id).order_by(CaseEvent.event_ts)
     return db.execute(stmt).scalars().all()
     
@@ -61,9 +66,11 @@ def update_case_status_no_commit(db: Session, *, case: Case, new_status: CaseSta
     case.status = new_status
     db.add(case)
     db.flush()  # Flush to save changes to the case, but do not commit yet
+    logger.info("Updated case status case_id=%s new_status=%s", case.id, new_status)
     return case
 
 def get_case_by_idempotency_key(db: Session, *, case_id: UUID, idempotency_key: str) -> CaseEvent | None:
+    logger.debug("Fetching case event by idempotency key case_id=%s idempotency_key=%s", case_id, idempotency_key)
     stmt = select(CaseEvent).where(CaseEvent.case_id == case_id, CaseEvent.idempotency_key == idempotency_key)
     return db.execute(stmt).scalar_one_or_none()
     
@@ -98,6 +105,7 @@ def create_status_change_event_no_commit(
     )
     db.add(event)
     db.flush()  # Flush to assign an ID to the event, but do not commit yet
+    logger.info("Created status change event event_id=%s case_id=%s old_status=%s new_status=%s", event.id, case_id, old_status, new_status)
     return event
 
     

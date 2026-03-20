@@ -4,9 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 # Logging must be initialised before any other app imports so that module-level
 # loggers in routers/services are configured from the start.
 from app.core.config import settings
-from app.core.logging_config import logging_manager
+from app.core.logging_config import get_logger, logging_manager
 
 logging_manager.setup(level=settings.LOG_LEVEL, json_format=settings.LOG_JSON)
+logger = get_logger(__name__)
 
 # ---- Register third-party sinks here (after setup) ----
 # Example:
@@ -44,3 +45,19 @@ app.include_router(auth_router, prefix="/v1")
 app.include_router(user_router, prefix="/v1")
 app.include_router(tenant_router, prefix="/v1")
 app.include_router(cases_router, prefix="/v1")
+
+
+@app.on_event("startup")
+async def log_startup() -> None:
+    logger.info(
+        "Application started title=%s debug=%s log_level=%s log_json=%s",
+        app.title,
+        settings.DEBUG,
+        settings.LOG_LEVEL,
+        settings.LOG_JSON,
+    )
+
+
+@app.on_event("shutdown")
+async def log_shutdown() -> None:
+    logger.info("Application shutdown")

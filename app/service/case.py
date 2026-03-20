@@ -46,6 +46,7 @@ def create_new_case(db: Session, *, case_in: CaseCreate, tenant_id: UUID, create
             status=case.status,
             created_at=case.created_at
         )
+        
     except Exception:
         logger.exception("Failed to create case")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -55,7 +56,9 @@ def get_all_cases(db: Session, *, limit: int = 50, offset: int = 0) -> list:
     List all cases for a given tenant with pagination.
     """
     try:
-        return list_cases(db, limit=limit, offset=offset)
+        cases = list_cases(db, limit=limit, offset=offset)
+        logger.debug("Listed cases count=%s limit=%s offset=%s", len(cases), limit, offset)
+        return cases
     except Exception:
         logger.exception("Failed to list cases")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -70,7 +73,9 @@ def get_case_by_id(db: Session, *, case_id: UUID):
         logger.exception("Failed to fetch case %s", case_id)
         raise HTTPException(status_code=500, detail="Internal server error")
     if case is None:
+        logger.warning("Case not found case_id=%s", case_id)
         raise HTTPException(status_code=404, detail="Case not found")
+    logger.debug("Fetched case case_id=%s", case_id)
     return case
     
 def append_case_event(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID, created_by: UUID):
@@ -79,10 +84,13 @@ def append_case_event(db: Session, *, event_in: CaseEventCreate, tenant_id: UUID
     """
     case = get_case(db, case_id=event_in.case_id)
     if case is None:
+        logger.warning("Cannot append event to missing case case_id=%s", event_in.case_id)
         raise HTTPException(status_code=404, detail="Case not found")
     try:
         # no commit — dependency commits after this returns
-        return create_case_event_no_commit(db, event_in=event_in, tenant_id=tenant_id, created_by=created_by)
+        event = create_case_event_no_commit(db, event_in=event_in, tenant_id=tenant_id, created_by=created_by)
+        logger.info("Appended case event case_id=%s event_id=%s event_type=%s", event_in.case_id, event.id, event.event_type)
+        return event
     except Exception:
         logger.exception("Failed to append event to case %s", event_in.case_id)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -92,7 +100,9 @@ def list_events_for_case(db: Session, *, case_id: UUID):
     List all events for a given case. This operation should be accessible to users who have permissions to view case information, such as tenant managers and supervisors.
     """
     try:
-        return get_case_events(db, case_id=case_id)
+        events = get_case_events(db, case_id=case_id)
+        logger.debug("Listed case events case_id=%s count=%s", case_id, len(events))
+        return events
     except Exception:
         logger.exception("Failed to list events for case %s", case_id)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -108,6 +118,7 @@ def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_b
     # first idempotency check: has this idempotency_key already been used for this case?
     existing_event = get_case_by_idempotency_key(db, case_id=case_id, idempotency_key=request.idempotency_key)
     if existing_event:
+        logger.info("Reused idempotent status update case_id=%s event_id=%s idempotency_key=%s", case_id, existing_event.id, request.idempotency_key)
         # if the event already exists, return the existing status update response
         payload = existing_event.payload or {}
         new_status = payload.get("new_status")
@@ -120,6 +131,7 @@ def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_b
     
     case = get_case(db, case_id=case_id)
     if case is None:
+        logger.warning("Cannot update missing case case_id=%s", case_id)
         raise HTTPException(status_code=404, detail="Case not found")
     
     old_status = case.status
@@ -146,11 +158,13 @@ def update_case_status(db: Session, *, case_id: UUID, tenant_id: UUID, created_b
             event_id=event.id,
             event_type=event.event_type
         )
+        
     except IntegrityError:
         # Duplicate idempotency key — savepoint rolled back, outer transaction intact.
         # Read the existing event (RLS context is still active).
         existing_event = get_case_by_idempotency_key(db, case_id=case_id, idempotency_key=request.idempotency_key)
         if existing_event:
+            logger.info("Recovered duplicate idempotency key case_id=%s event_id=%s idempotency_key=%s", case_id, existing_event.id, request.idempotency_key)
             payload = existing_event.payload or {}
             new_status = payload.get("new_status")
             return CaseStatusUpdateResponse(
